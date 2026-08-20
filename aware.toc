@@ -2,7 +2,7 @@
 ## Title: aware
 ## Notes: Shows a cast bar and spell icon above visible nameplates.
 ## Author: Codex
-## Version: 0.6.0
+## Version: 0.6.1
 ## SavedVariables: AwareDebugLog, AwareSettings
 
 aware.lua

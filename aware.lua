@@ -47,6 +47,7 @@ local activeByName = {}
 local knownChildren = 0
 local scanElapsed = 0
 local unitScanElapsed = 0
+local cvarElapsed = 0
 local summaryElapsed = 0
 local sessionStarted = false
 local sessionID
@@ -166,6 +167,9 @@ local function normalizeName(name)
     if not name then
         return nil
     end
+    name = tostring(name)
+    name = name:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "")
+    name = name:gsub("^%s+", ""):gsub("%s+$", "")
     return string.lower((name:gsub("%-.+$", "")))
 end
 
@@ -203,19 +207,77 @@ local function trackingEnabled()
     return AwareSettings.enabled and zoneEnabled()
 end
 
-local function shortName(name)
-    if not name then
-        return nil
+local changingNameplateCVar = false
+local function ensureNameplateAnchors(reason)
+    if changingNameplateCVar or not trackingEnabled() then
+        return
     end
-    return name:gsub("%-.+$", "")
+
+    local expectedEnemies = AwareSettings.showHostile and "1" or "0"
+    local expectedFriends = AwareSettings.showFriendly and "1" or "0"
+    local actualEnemies = tonumber(GetCVar("nameplateShowEnemies")) == 1 and "1" or "0"
+    local actualFriends = tonumber(GetCVar("nameplateShowFriends")) == 1 and "1" or "0"
+
+    if actualEnemies == expectedEnemies and actualFriends == expectedFriends then
+        return
+    end
+
+    changingNameplateCVar = true
+    if actualEnemies ~= expectedEnemies then
+        SetCVar("nameplateShowEnemies", expectedEnemies)
+    end
+    if actualFriends ~= expectedFriends then
+        SetCVar("nameplateShowFriends", expectedFriends)
+    end
+    changingNameplateCVar = false
+
+    log(
+        "ANCHOR_CVAR_RESTORE reason=" .. tostring(reason)
+        .. " enemies=" .. actualEnemies .. "->" .. expectedEnemies
+        .. " friends=" .. actualFriends .. "->" .. expectedFriends
+    )
 end
 
 local function plateName(plate)
     local nameRegion = select(7, plate:GetRegions())
     if nameRegion and nameRegion.GetText then
-        return nameRegion:GetText() or "unknown"
+        local name = nameRegion:GetText()
+        if name and name ~= "" then
+            return name
+        end
+    end
+
+    local regionCount = select("#", plate:GetRegions())
+    for index = 1, regionCount do
+        local region = select(index, plate:GetRegions())
+        if region and region:GetObjectType() == "FontString" and region.GetText then
+            local text = region:GetText()
+            if text and text ~= "" and not tonumber(text) then
+                return text
+            end
+        end
     end
     return "unknown"
+end
+
+local function plateMatchesName(plate, normalizedName)
+    if not normalizedName then
+        return false
+    end
+    if normalizeName(plateName(plate)) == normalizedName then
+        return true
+    end
+
+    local regionCount = select("#", plate:GetRegions())
+    for index = 1, regionCount do
+        local region = select(index, plate:GetRegions())
+        if region and region:GetObjectType() == "FontString" and region.GetText then
+            if normalizeName(region:GetText()) == normalizedName then
+                return true
+            end
+        end
+    end
+    return false
 end
 
 local function isNameplate(frame)
@@ -274,8 +336,23 @@ local function findCastForPlate(plate)
     if data and data.guid then
         cast = activeByGUID[data.guid]
     end
+    if not cast and data and data.inferredName then
+        cast = activeByName[data.inferredName]
+    end
     if not cast then
         cast = activeByName[normalizeName(plateName(plate))]
+    end
+    if not cast then
+        local regionCount = select("#", plate:GetRegions())
+        for index = 1, regionCount do
+            local region = select(index, plate:GetRegions())
+            if region and region:GetObjectType() == "FontString" and region.GetText then
+                cast = activeByName[normalizeName(region:GetText())]
+            end
+            if cast then
+                break
+            end
+        end
     end
 
     if cast and GetTime() < cast.endTime then
@@ -295,7 +372,34 @@ local function showNativeCast(plate)
     end
 
     local minimum, maximum = data.sourceBar:GetMinMaxValues()
-    setIcon(data, data.sourceIcon and data.sourceIcon:GetTexture())
+    local nativeTexture = data.sourceIcon and data.sourceIcon:GetTexture()
+    if not data.guid and nativeTexture then
+        local now = GetTime()
+        local inferred
+        for candidate in pairs(activeCasts) do
+            if candidate.icon == nativeTexture
+                and now >= candidate.startTime
+                and now - candidate.startTime <= 1.25
+                and now < candidate.endTime then
+                if inferred then
+                    inferred = nil
+                    break
+                end
+                inferred = candidate
+            end
+        end
+        if inferred then
+            data.guid = inferred.guid
+            data.inferredName = inferred.normalizedName
+            log(
+                "ANCHOR_INFER method=native_start source=" .. tostring(inferred.sourceName)
+                .. " spell=" .. tostring(inferred.spellName)
+                .. " plate=" .. tostring(plateName(plate))
+            )
+        end
+    end
+
+    setIcon(data, nativeTexture)
     data.bar:SetMinMaxValues(minimum, maximum)
     data.bar:SetValue(data.sourceBar:GetValue())
     data.mode = "native"
@@ -448,6 +552,7 @@ local function attachPlate(plate)
     plate:HookScript("OnHide", function()
         hideOverlay(plate, "plate_hide")
         plates[plate].guid = nil
+        plates[plate].inferredName = nil
     end)
 
     if sourceBar:IsShown() then
@@ -513,19 +618,6 @@ local function getBaseCastDuration(spellID)
 end
 
 
-local function findKuiPlate(guid, name)
-    local kui = _G.KuiNameplates
-    if not kui or not kui.GetNameplate then
-        return nil
-    end
-
-    local frame = kui:GetNameplate(guid, shortName(name))
-    if frame and frame.oldCastbar then
-        return frame.oldCastbar:GetParent()
-    end
-    return nil
-end
-
 local function associateUnit(unit)
     if not unit or not UnitExists(unit) then
         return
@@ -537,17 +629,11 @@ local function associateUnit(unit)
         return
     end
 
-    local plate = findKuiPlate(guid, name)
-    if plate and plates[plate] then
-        plates[plate].guid = guid
-        return
-    end
-
     local normalized = normalizeName(name)
     local candidate
     for visiblePlate in pairs(plates) do
         if visiblePlate:IsShown()
-            and normalizeName(plateName(visiblePlate)) == normalized then
+            and plateMatchesName(visiblePlate, normalized) then
             if candidate then
                 return
             end
@@ -569,13 +655,7 @@ end
 local function matchingPlates(cast)
     local matches = {}
 
-    local mappedPlate = findKuiPlate(cast.guid, cast.sourceName)
-    if mappedPlate and plates[mappedPlate] and mappedPlate:IsShown() then
-        plates[mappedPlate].guid = cast.guid
-        table.insert(matches, mappedPlate)
-    end
-
-    if #matches == 0 and cast.guid then
+    if cast.guid then
         for plate, data in pairs(plates) do
             if plate:IsShown() and data.guid == cast.guid then
                 table.insert(matches, plate)
@@ -586,9 +666,33 @@ local function matchingPlates(cast)
     if #matches == 0 then
         for plate in pairs(plates) do
             if plate:IsShown()
-                and normalizeName(plateName(plate)) == cast.normalizedName then
+                and plateMatchesName(plate, cast.normalizedName) then
                 table.insert(matches, plate)
             end
+        end
+    end
+
+    if #matches == 0 and cast.icon then
+        local inferred
+        for plate, data in pairs(plates) do
+            local texture = data.sourceIcon and data.sourceIcon:GetTexture()
+            if plate:IsShown() and data.sourceBar:IsShown() and texture == cast.icon then
+                if inferred then
+                    inferred = nil
+                    break
+                end
+                inferred = plate
+            end
+        end
+        if inferred then
+            plates[inferred].guid = cast.guid
+            plates[inferred].inferredName = cast.normalizedName
+            table.insert(matches, inferred)
+            log(
+                "ANCHOR_INFER method=native_icon source=" .. tostring(cast.sourceName)
+                .. " spell=" .. tostring(cast.spellName)
+                .. " plate=" .. tostring(plateName(inferred))
+            )
         end
     end
 
@@ -761,6 +865,7 @@ local function startCombatCast(guid, name, flags, spellID, spellName)
     if not sourceAllowed(flags) then
         return
     end
+    ensureNameplateAnchors("cast_start")
     local duration, icon = getBaseCastDuration(spellID)
     beginCast(guid, name, spellID, spellName, icon, duration, GetTime(), "combatlog")
 end
@@ -853,6 +958,7 @@ local function refreshZoneState(reason)
     if changed or not trackingEnabled() then
         clearActiveCasts(changed and "zone_change" or "zone_disabled")
     end
+    ensureNameplateAnchors("zone_state")
 
     log(
         "ZONE_STATE reason=" .. tostring(reason)
@@ -938,8 +1044,7 @@ end
 
 local function applySettings()
     ensureSettings()
-    SetCVar("nameplateShowEnemies", AwareSettings.showHostile and 1 or 0)
-    SetCVar("nameplateShowFriends", AwareSettings.showFriendly and 1 or 0)
+    ensureNameplateAnchors("settings")
     applyVisualSettings()
 
     if not trackingEnabled() then
@@ -981,6 +1086,7 @@ end
 aware:SetScript("OnUpdate", function(_, elapsed)
     scanElapsed = scanElapsed + elapsed
     unitScanElapsed = unitScanElapsed + elapsed
+    cvarElapsed = cvarElapsed + elapsed
     summaryElapsed = summaryElapsed + elapsed
 
     local now = GetTime()
@@ -1014,6 +1120,11 @@ aware:SetScript("OnUpdate", function(_, elapsed)
     if unitScanElapsed >= 1 then
         unitScanElapsed = 0
         associateKnownUnits()
+    end
+
+    if cvarElapsed >= 1 then
+        cvarElapsed = 0
+        ensureNameplateAnchors("periodic")
     end
 
     for cast in pairs(activeCasts) do
