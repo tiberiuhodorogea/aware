@@ -17,6 +17,14 @@ local defaults = {
     showMinimap = true,
     minimapAngle = 220,
     rawCombatLog = true,
+    zoneDungeon = true,
+    zoneRaid = true,
+    zoneBattleground = true,
+    zoneArena = true,
+    zoneSanctuary = true,
+    zoneFriendly = true,
+    zoneHostile = true,
+    zoneContested = true,
 }
 
 local function ensureSettings()
@@ -43,6 +51,14 @@ local summaryElapsed = 0
 local sessionStarted = false
 local sessionID
 local rawLoggingWasEnabled = false
+local unmatchedDiagnostics = {}
+local currentZone = {
+    category = "contested",
+    setting = "zoneContested",
+    label = "Contested / neutral",
+    instanceType = "none",
+    pvpType = "unknown",
+}
 
 local MAX_LOG_ENTRIES = 20000
 local LOG_TRIM_COUNT = 1000
@@ -153,6 +169,40 @@ local function normalizeName(name)
     return string.lower((name:gsub("%-.+$", "")))
 end
 
+local function detectZone()
+    local _, instanceType = IsInInstance()
+    instanceType = instanceType or "none"
+    local pvpType = GetZonePVPInfo and GetZonePVPInfo() or nil
+
+    if instanceType == "party" then
+        return "dungeon", "zoneDungeon", "Dungeon", instanceType, pvpType
+    elseif instanceType == "raid" then
+        return "raid", "zoneRaid", "Raid", instanceType, pvpType
+    elseif instanceType == "pvp" then
+        return "battleground", "zoneBattleground", "Battleground", instanceType, pvpType
+    elseif instanceType == "arena" then
+        return "arena", "zoneArena", "Arena", instanceType, pvpType
+    elseif pvpType == "sanctuary" then
+        return "sanctuary", "zoneSanctuary", "Sanctuary", instanceType, pvpType
+    elseif pvpType == "friendly" then
+        return "friendly", "zoneFriendly", "Friendly territory", instanceType, pvpType
+    elseif pvpType == "hostile" then
+        return "hostile", "zoneHostile", "Hostile territory", instanceType, pvpType
+    end
+
+    return "contested", "zoneContested", "Contested / neutral", instanceType, pvpType
+end
+
+local function zoneEnabled()
+    ensureSettings()
+    return AwareSettings[currentZone.setting] ~= false
+end
+
+local function trackingEnabled()
+    ensureSettings()
+    return AwareSettings.enabled and zoneEnabled()
+end
+
 local function shortName(name)
     if not name then
         return nil
@@ -239,9 +289,8 @@ local function showNativeCast(plate)
     if not data then
         return
     end
-    ensureSettings()
-    if not AwareSettings.enabled then
-        hideOverlay(plate, "disabled")
+    if not trackingEnabled() then
+        hideOverlay(plate, "disabled_here")
         return
     end
 
@@ -520,7 +569,13 @@ end
 local function matchingPlates(cast)
     local matches = {}
 
-    if cast.guid then
+    local mappedPlate = findKuiPlate(cast.guid, cast.sourceName)
+    if mappedPlate and plates[mappedPlate] and mappedPlate:IsShown() then
+        plates[mappedPlate].guid = cast.guid
+        table.insert(matches, mappedPlate)
+    end
+
+    if #matches == 0 and cast.guid then
         for plate, data in pairs(plates) do
             if plate:IsShown() and data.guid == cast.guid then
                 table.insert(matches, plate)
@@ -538,6 +593,36 @@ local function matchingPlates(cast)
     end
 
     return matches
+end
+
+local function logUnmatchedCast(cast)
+    local now = GetTime()
+    local key = cast.normalizedName or tostring(cast.guid)
+    if unmatchedDiagnostics[key] and now - unmatchedDiagnostics[key] < 10 then
+        return
+    end
+    unmatchedDiagnostics[key] = now
+
+    local visible = 0
+    local sample = {}
+    for plate in pairs(plates) do
+        if plate:IsShown() then
+            visible = visible + 1
+            if #sample < 8 then
+                local name = tostring(plateName(plate)):gsub("|", "/")
+                table.insert(sample, name)
+            end
+        end
+    end
+
+    log(
+        "CAST_UNMATCHED source=" .. tostring(cast.sourceName)
+        .. " guid=" .. tostring(cast.guid)
+        .. " spell=" .. tostring(cast.spellName)
+        .. " id=" .. tostring(cast.spellID)
+        .. " visible=" .. visible
+        .. " sample=" .. table.concat(sample, "|")
+    )
 end
 
 local function stopCast(cast, reason)
@@ -582,8 +667,7 @@ local function stopCastByIdentity(guid, name, spellID, reason)
 end
 
 local function beginCast(guid, name, spellID, spellName, icon, duration, startTime, kind)
-    ensureSettings()
-    if not AwareSettings.enabled then
+    if not trackingEnabled() then
         return
     end
     local normalized = normalizeName(name)
@@ -650,6 +734,7 @@ local function beginCast(guid, name, spellID, spellName, icon, duration, startTi
         bump("immediate", matched)
     else
         bump("unmatched")
+        logUnmatchedCast(cast)
     end
 end
 
@@ -754,6 +839,31 @@ local function clearActiveCasts(reason)
     end
 end
 
+local function refreshZoneState(reason)
+    local category, setting, label, instanceType, pvpType = detectZone()
+    local changed = currentZone.category ~= category
+    currentZone = {
+        category = category,
+        setting = setting,
+        label = label,
+        instanceType = instanceType,
+        pvpType = pvpType or "unknown",
+    }
+
+    if changed or not trackingEnabled() then
+        clearActiveCasts(changed and "zone_change" or "zone_disabled")
+    end
+
+    log(
+        "ZONE_STATE reason=" .. tostring(reason)
+        .. " category=" .. category
+        .. " enabled=" .. tostring(zoneEnabled())
+        .. " zone=" .. tostring(GetRealZoneText())
+        .. " instanceType=" .. tostring(instanceType)
+        .. " pvpType=" .. tostring(pvpType)
+    )
+end
+
 local function enableRawCombatLog()
     ensureSettings()
     if not LoggingCombat then
@@ -814,6 +924,7 @@ local function printHealth()
         .. ", log=" .. #AwareDebugLog .. "/" .. MAX_LOG_ENTRIES
         .. ", memory=" .. string.format("%.1f KB", memory)
         .. ", rawLog=" .. tostring(rawEnabled)
+        .. ", zone=" .. currentZone.category .. ":" .. tostring(zoneEnabled())
     )
     chat(
         "totals: starts=" .. totals.starts
@@ -831,8 +942,8 @@ local function applySettings()
     SetCVar("nameplateShowFriends", AwareSettings.showFriendly and 1 or 0)
     applyVisualSettings()
 
-    if not AwareSettings.enabled then
-        clearActiveCasts("disabled")
+    if not trackingEnabled() then
+        clearActiveCasts("disabled_here")
     end
 
     if LoggingCombat then
@@ -851,6 +962,10 @@ end
 
 api.GetDefaults = function()
     return defaults
+end
+
+api.GetZoneContext = function()
+    return currentZone
 end
 
 api.ApplySettings = applySettings
@@ -939,6 +1054,7 @@ aware:SetScript("OnEvent", function(_, event, ...)
         scanNameplates()
     elseif event == "PLAYER_ENTERING_WORLD" then
         clearActiveCasts("enter_world")
+        refreshZoneState("enter_world")
         associateKnownUnits()
         beginSession()
         local instanceName, instanceType = GetInstanceInfo()
@@ -950,6 +1066,10 @@ aware:SetScript("OnEvent", function(_, event, ...)
     elseif event == "PLAYER_LOGOUT" then
         flushSummary("logout")
         log("SESSION_END id=" .. tostring(sessionID) .. " reason=logout")
+    elseif event == "ZONE_CHANGED_NEW_AREA"
+        or event == "ZONE_CHANGED"
+        or event == "ZONE_CHANGED_INDOORS" then
+        refreshZoneState(event)
     elseif event == "PLAYER_TARGET_CHANGED"
         or event == "PLAYER_FOCUS_CHANGED"
         or event == "UPDATE_MOUSEOVER_UNIT"
@@ -988,6 +1108,9 @@ end)
 aware:RegisterEvent("ADDON_LOADED")
 aware:RegisterEvent("PLAYER_ENTERING_WORLD")
 aware:RegisterEvent("PLAYER_LOGOUT")
+aware:RegisterEvent("ZONE_CHANGED_NEW_AREA")
+aware:RegisterEvent("ZONE_CHANGED")
+aware:RegisterEvent("ZONE_CHANGED_INDOORS")
 aware:RegisterEvent("PLAYER_TARGET_CHANGED")
 aware:RegisterEvent("PLAYER_FOCUS_CHANGED")
 aware:RegisterEvent("UPDATE_MOUSEOVER_UNIT")
