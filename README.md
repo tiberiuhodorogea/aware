@@ -12,6 +12,10 @@ uses combat-log events for untargeted casters, preserves casts that began off
 camera, supports unit-token channels, and prefers GUID matching when the client
 provides enough information.
 
+No nameplate addon is required. `aware` uses Blizzard's underlying world
+anchors directly and keeps the required friendly and hostile anchor CVars in
+the state selected by its controls.
+
 ## Controls
 
 Open the live controls with the minimap button, `/aware`, or Blizzard's
