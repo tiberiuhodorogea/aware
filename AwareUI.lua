@@ -7,6 +7,7 @@ local controls = {}
 local refreshing = false
 local window
 local minimapButton
+local zoneStatus
 local appearanceSelection = 1
 local appearanceOptions = {
     { label = "Bar width", key = "barWidth", minimum = 70, maximum = 180, step = 1, format = function(v) return string.format("%d", v) end },
@@ -156,12 +157,25 @@ local function appearanceSlider(parent, x, y)
     return control
 end
 
+local function updateZoneStatus()
+    if not zoneStatus or not api.GetZoneContext then
+        return
+    end
+    local context = api.GetZoneContext()
+    local enabled = settings()[context.setting] ~= false
+    zoneStatus:SetText(
+        "Current: " .. context.label .. " — "
+        .. (enabled and "|cff66ff99enabled|r" or "|cffff7777disabled|r")
+    )
+end
+
 local function refresh()
     refreshing = true
     for _, control in ipairs(controls) do
         control:Refresh()
     end
     refreshing = false
+    updateZoneStatus()
 end
 
 local function positionMinimapButton()
@@ -182,7 +196,7 @@ end
 local function createWindow()
     local frame = CreateFrame("Frame", "AwareOptionsFrame", UIParent)
     frame:SetWidth(460)
-    frame:SetHeight(490)
+    frame:SetHeight(635)
     frame:SetPoint("CENTER")
     frame:SetFrameStrata("DIALOG")
     frame:SetClampedToScreen(true)
@@ -230,12 +244,23 @@ local function createWindow()
     checkbox(frame, "NPCs and pets", "showNPCPets", 22, -194, true)
     checkbox(frame, "Channeled spells", "showChannels", 238, -194, true)
 
-    section(frame, "Appearance", -236)
-    checkbox(frame, "Show spell icon", "showIcon", 22, -256, false)
-    appearanceSlider(frame, 24, -310)
+    section(frame, "Zones", -236)
+    checkbox(frame, "Dungeons", "zoneDungeon", 22, -256, true, updateZoneStatus)
+    checkbox(frame, "Raids", "zoneRaid", 238, -256, true, updateZoneStatus)
+    checkbox(frame, "Battlegrounds", "zoneBattleground", 22, -286, true, updateZoneStatus)
+    checkbox(frame, "Arenas", "zoneArena", 238, -286, true, updateZoneStatus)
+    checkbox(frame, "Sanctuary areas", "zoneSanctuary", 22, -316, true, updateZoneStatus)
+    checkbox(frame, "Friendly territory / cities", "zoneFriendly", 238, -316, true, updateZoneStatus)
+    checkbox(frame, "Hostile territory / cities", "zoneHostile", 22, -346, true, updateZoneStatus)
+    checkbox(frame, "Contested / neutral", "zoneContested", 238, -346, true, updateZoneStatus)
+    zoneStatus = title(frame, "Current zone", 24, -379, 10, { 0.70, 0.76, 0.82 })
 
-    section(frame, "Diagnostics", -365)
-    checkbox(frame, "Continuous combat log", "rawCombatLog", 22, -385, false)
+    section(frame, "Appearance", -407)
+    checkbox(frame, "Show spell icon", "showIcon", 22, -427, false)
+    appearanceSlider(frame, 24, -481)
+
+    section(frame, "Diagnostics", -536)
+    checkbox(frame, "Continuous combat log", "rawCombatLog", 22, -556, false)
 
     local health = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
     health:SetWidth(96)
@@ -371,6 +396,13 @@ InterfaceOptions_AddCategory(category)
 
 local loader = CreateFrame("Frame")
 loader:RegisterEvent("PLAYER_LOGIN")
-loader:SetScript("OnEvent", function()
-    createMinimapButton()
+loader:RegisterEvent("ZONE_CHANGED_NEW_AREA")
+loader:RegisterEvent("ZONE_CHANGED")
+loader:RegisterEvent("ZONE_CHANGED_INDOORS")
+loader:SetScript("OnEvent", function(_, event)
+    if event == "PLAYER_LOGIN" then
+        createMinimapButton()
+    elseif window:IsShown() then
+        updateZoneStatus()
+    end
 end)

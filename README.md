@@ -16,7 +16,9 @@ provides enough information.
 
 Open the live controls with the minimap button, `/aware`, or Blizzard's
 Interface Options. The organized panel covers tracking, bar appearance, and
-diagnostics; the existing visual behavior remains the default.
+diagnostics; the existing visual behavior remains the default. Tracking can be
+toggled independently for dungeons, raids, battlegrounds, arenas, sanctuaries,
+friendly territory, hostile territory, and contested or neutral outdoor areas.
 
 ## Install
 
