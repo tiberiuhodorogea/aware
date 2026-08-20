@@ -16,6 +16,10 @@ No nameplate addon is required. `aware` uses Blizzard's underlying world
 anchors directly and keeps the required friendly and hostile anchor CVars in
 the state selected by its controls.
 
+Proc-sensitive paladin casts use stable WotLK base durations so the local
+player's Infusion of Light or Art of War state cannot alter another caster's
+estimated bar.
+
 ## Controls
 
 Open the live controls with the minimap button, `/aware`, or Blizzard's

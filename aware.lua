@@ -65,6 +65,13 @@ local MAX_LOG_ENTRIES = 20000
 local LOG_TRIM_COUNT = 1000
 local LOG_FORMAT_VERSION = 4
 local SUMMARY_INTERVAL = 15
+local STABLE_BASE_DURATIONS = {
+    [48785] = 1.5, -- Flash of Light
+    [48782] = 2.5, -- Holy Light
+    [48801] = 1.5, -- Exorcism
+    [10326] = 1.5, -- Turn Evil
+    [48950] = 10.0, -- Redemption
+}
 
 local stats = {
     starts = 0,
@@ -75,6 +82,7 @@ local stats = {
     channels = 0,
     replacements = 0,
     skipped = 0,
+    stable = 0,
 }
 
 local totals = {
@@ -86,6 +94,7 @@ local totals = {
     channels = 0,
     replacements = 0,
     skipped = 0,
+    stable = 0,
 }
 
 local unitTokens = { "target", "focus", "mouseover" }
@@ -156,6 +165,7 @@ local function flushSummary(reason)
         .. " channels=" .. stats.channels
         .. " replaced=" .. stats.replacements
         .. " skipped=" .. stats.skipped
+        .. " stable=" .. stats.stable
     )
 
     for key in pairs(stats) do
@@ -591,6 +601,12 @@ end
 
 local function getBaseCastDuration(spellID)
     local _, _, icon, _, _, _, castTimeMilliseconds = GetSpellInfo(spellID)
+    local stableDuration = STABLE_BASE_DURATIONS[spellID]
+    if stableDuration then
+        bump("stable")
+        return stableDuration, icon
+    end
+
     local raw = castTimeMilliseconds and castTimeMilliseconds / 1000 or 0
     if raw <= 0 then
         return 0, icon
@@ -1039,6 +1055,7 @@ local function printHealth()
         .. ", stops=" .. totals.stops
         .. ", channels=" .. totals.channels
         .. ", skipped=" .. totals.skipped
+        .. ", stable=" .. totals.stable
     )
 end
 
