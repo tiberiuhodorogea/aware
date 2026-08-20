@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="Media/aware-icon-source.png" alt="aware icon" width="88">
+</p>
+
 # aware
 
 Minimal nearby-cast visibility for World of Warcraft: Wrath of the Lich King
@@ -7,6 +11,12 @@ Minimal nearby-cast visibility for World of Warcraft: Wrath of the Lich King
 uses combat-log events for untargeted casters, preserves casts that began off
 camera, supports unit-token channels, and prefers GUID matching when the client
 provides enough information.
+
+## Controls
+
+Open the live controls with the minimap button, `/aware`, or Blizzard's
+Interface Options. The organized panel covers tracking, bar appearance, and
+diagnostics; the existing visual behavior remains the default.
 
 ## Install
 
