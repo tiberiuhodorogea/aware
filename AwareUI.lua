@@ -7,6 +7,14 @@ local controls = {}
 local refreshing = false
 local window
 local minimapButton
+local appearanceSelection = 1
+local appearanceOptions = {
+    { label = "Bar width", key = "barWidth", minimum = 70, maximum = 180, step = 1, format = function(v) return string.format("%d", v) end },
+    { label = "Bar height", key = "barHeight", minimum = 12, maximum = 28, step = 1, format = function(v) return string.format("%d", v) end },
+    { label = "Vertical offset", key = "verticalOffset", minimum = -20, maximum = 40, step = 1, format = function(v) return string.format("%d", v) end },
+    { label = "Opacity", key = "opacity", minimum = 0.4, maximum = 1, step = 0.05, format = function(v) return string.format("%d%%", v * 100) end },
+    { label = "Scale", key = "scale", minimum = 0.75, maximum = 1.5, step = 0.05, format = function(v) return string.format("%d%%", v * 100) end },
+}
 local atan2 = math.atan2 or function(y, x)
     if x > 0 then
         return math.atan(y / x)
@@ -77,41 +85,72 @@ local function checkbox(parent, label, key, x, y, clearTracked, afterApply)
     return button
 end
 
-local function slider(parent, label, key, minimum, maximum, step, x, y, format)
-    local control = CreateFrame("Slider", nil, parent, "OptionsSliderTemplate")
-    control:SetPoint("TOPLEFT", parent, "TOPLEFT", x, y)
-    control:SetWidth(180)
+local function appearanceSlider(parent, x, y)
+    local selector = CreateFrame("Frame", "AwareAppearanceSelector", parent, "UIDropDownMenuTemplate")
+    selector:SetPoint("TOPLEFT", parent, "TOPLEFT", x - 16, y + 8)
+    UIDropDownMenu_SetWidth(selector, 142)
+
+    local control = CreateFrame("Slider", "AwareAppearanceSlider", parent, "OptionsSliderTemplate")
+    control:SetPoint("LEFT", selector, "RIGHT", 4, 1)
+    control:SetWidth(205)
     control:SetHeight(16)
-    control:SetMinMaxValues(minimum, maximum)
-    control:SetValueStep(step)
+    if _G.AwareAppearanceSliderText then
+        _G.AwareAppearanceSliderText:Hide()
+        _G.AwareAppearanceSliderLow:Hide()
+        _G.AwareAppearanceSliderHigh:Hide()
+    end
 
     local caption = control:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
     caption:SetPoint("BOTTOMLEFT", control, "TOPLEFT", 0, 4)
 
     local low = control:CreateFontString(nil, "ARTWORK", "GameFontDisableSmall")
     low:SetPoint("TOPLEFT", control, "BOTTOMLEFT", 0, -2)
-    low:SetText(tostring(minimum))
 
     local high = control:CreateFontString(nil, "ARTWORK", "GameFontDisableSmall")
     high:SetPoint("TOPRIGHT", control, "BOTTOMRIGHT", 0, -2)
-    high:SetText(tostring(maximum))
 
-    local function display(value)
-        return format and format(value) or tostring(value)
+    local function configure()
+        local option = appearanceOptions[appearanceSelection]
+        refreshing = true
+        control:SetMinMaxValues(option.minimum, option.maximum)
+        control:SetValueStep(option.step)
+        control:SetValue(settings()[option.key])
+        caption:SetText(option.label .. ": |cff66ccff" .. option.format(settings()[option.key]) .. "|r")
+        low:SetText(option.format(option.minimum))
+        high:SetText(option.format(option.maximum))
+        UIDropDownMenu_SetSelectedValue(selector, appearanceSelection)
+        UIDropDownMenu_SetText(selector, option.label)
+        refreshing = false
     end
 
     control:SetScript("OnValueChanged", function(self, value)
-        local rounded = math.floor(value / step + 0.5) * step
-        caption:SetText(label .. ": |cff66ccff" .. display(rounded) .. "|r")
+        local option = appearanceOptions[appearanceSelection]
+        local rounded = math.floor(value / option.step + 0.5) * option.step
+        caption:SetText(option.label .. ": |cff66ccff" .. option.format(rounded) .. "|r")
         if refreshing then
             return
         end
-        settings()[key] = rounded
+        settings()[option.key] = rounded
         apply(false)
     end)
+
+    UIDropDownMenu_Initialize(selector, function()
+        for index, option in ipairs(appearanceOptions) do
+            local selectedIndex = index
+            local info = UIDropDownMenu_CreateInfo()
+            info.text = option.label
+            info.value = selectedIndex
+            info.checked = selectedIndex == appearanceSelection
+            info.func = function()
+                appearanceSelection = selectedIndex
+                configure()
+            end
+            UIDropDownMenu_AddButton(info)
+        end
+    end)
+
     control.Refresh = function(self)
-        self:SetValue(settings()[key])
-        caption:SetText(label .. ": |cff66ccff" .. display(settings()[key]) .. "|r")
+        configure()
     end
     table.insert(controls, control)
     return control
@@ -143,7 +182,7 @@ end
 local function createWindow()
     local frame = CreateFrame("Frame", "AwareOptionsFrame", UIParent)
     frame:SetWidth(460)
-    frame:SetHeight(590)
+    frame:SetHeight(490)
     frame:SetPoint("CENTER")
     frame:SetFrameStrata("DIALOG")
     frame:SetClampedToScreen(true)
@@ -160,9 +199,14 @@ local function createWindow()
         edgeSize = 18,
         insets = { left = 4, right = 4, top = 4, bottom = 4 },
     })
-    frame:SetBackdropColor(0.035, 0.055, 0.075, 0.98)
+    frame:SetBackdropColor(0.025, 0.040, 0.055, 1)
     frame:SetBackdropBorderColor(0.18, 0.48, 0.62, 0.95)
     frame:Hide()
+
+    local solidBackground = frame:CreateTexture(nil, "BACKGROUND")
+    solidBackground:SetTexture(0.012, 0.022, 0.034, 0.96)
+    solidBackground:SetPoint("TOPLEFT", frame, "TOPLEFT", 7, -8)
+    solidBackground:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -7, 7)
 
     local accent = frame:CreateTexture(nil, "ARTWORK")
     accent:SetTexture(0.18, 0.72, 0.95, 1)
@@ -188,14 +232,10 @@ local function createWindow()
 
     section(frame, "Appearance", -236)
     checkbox(frame, "Show spell icon", "showIcon", 22, -256, false)
-    slider(frame, "Bar width", "barWidth", 70, 180, 1, 24, -309, function(v) return string.format("%d", v) end)
-    slider(frame, "Bar height", "barHeight", 12, 28, 1, 246, -309, function(v) return string.format("%d", v) end)
-    slider(frame, "Vertical offset", "verticalOffset", -20, 40, 1, 24, -371, function(v) return string.format("%d", v) end)
-    slider(frame, "Opacity", "opacity", 0.4, 1, 0.05, 246, -371, function(v) return string.format("%d%%", v * 100) end)
-    slider(frame, "Scale", "scale", 0.75, 1.5, 0.05, 24, -433, function(v) return string.format("%d%%", v * 100) end)
+    appearanceSlider(frame, 24, -310)
 
-    section(frame, "Diagnostics", -476)
-    checkbox(frame, "Continuous combat log", "rawCombatLog", 22, -496, false)
+    section(frame, "Diagnostics", -365)
+    checkbox(frame, "Continuous combat log", "rawCombatLog", 22, -385, false)
 
     local health = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
     health:SetWidth(96)
