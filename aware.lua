@@ -41,6 +41,7 @@ end
 local aware = CreateFrame("Frame")
 local plates = {}
 local visibleBars = {}
+local pendingNativeBars = {}
 local activeCasts = {}
 local activeByGUID = {}
 local activeByName = {}
@@ -83,6 +84,7 @@ local stats = {
     replacements = 0,
     skipped = 0,
     stable = 0,
+    deferred = 0,
 }
 
 local totals = {
@@ -95,6 +97,7 @@ local totals = {
     replacements = 0,
     skipped = 0,
     stable = 0,
+    deferred = 0,
 }
 
 local unitTokens = { "target", "focus", "mouseover" }
@@ -166,6 +169,7 @@ local function flushSummary(reason)
         .. " replaced=" .. stats.replacements
         .. " skipped=" .. stats.skipped
         .. " stable=" .. stats.stable
+        .. " deferred=" .. stats.deferred
     )
 
     for key in pairs(stats) do
@@ -371,17 +375,36 @@ local function findCastForPlate(plate)
     return nil
 end
 
+local function nativeCastValues(data)
+    local minimum, maximum = data.sourceBar:GetMinMaxValues()
+    if not minimum or not maximum or maximum <= minimum or maximum <= 0 then
+        return nil
+    end
+    return minimum, maximum
+end
+
 local function showNativeCast(plate)
     local data = plates[plate]
     if not data then
         return
     end
     if not trackingEnabled() then
+        pendingNativeBars[plate] = nil
         hideOverlay(plate, "disabled_here")
-        return
+        return false
     end
 
-    local minimum, maximum = data.sourceBar:GetMinMaxValues()
+    local minimum, maximum = nativeCastValues(data)
+    if not minimum then
+        if not pendingNativeBars[plate] then
+            bump("deferred")
+        end
+        pendingNativeBars[plate] = true
+        return false
+    end
+    pendingNativeBars[plate] = nil
+
+    local alreadyNative = data.mode == "native" and data.overlay:IsShown()
     local nativeTexture = data.sourceIcon and data.sourceIcon:GetTexture()
     if not data.guid and nativeTexture then
         local now = GetTime()
@@ -417,11 +440,14 @@ local function showNativeCast(plate)
     data.overlay:Show()
     visibleBars[plate] = true
 
-    log(
-        "BAR_SHOW name=" .. plateName(plate)
-        .. " mode=native min=" .. tostring(minimum)
-        .. " max=" .. tostring(maximum)
-    )
+    if not alreadyNative then
+        log(
+            "BAR_SHOW name=" .. plateName(plate)
+            .. " mode=native min=" .. tostring(minimum)
+            .. " max=" .. tostring(maximum)
+        )
+    end
+    return true
 end
 
 local function showTrackedCast(plate, cast, late)
@@ -431,8 +457,9 @@ local function showTrackedCast(plate, cast, late)
     end
 
     if data.sourceBar:IsShown() then
-        showNativeCast(plate)
-        return true
+        if showNativeCast(plate) then
+            return true
+        end
     end
 
     local now = GetTime()
@@ -465,6 +492,7 @@ local function showTrackedCast(plate, cast, late)
 end
 
 local function nativeCastEnded(plate)
+    pendingNativeBars[plate] = nil
     local cast = findCastForPlate(plate)
     if cast and showTrackedCast(plate, cast, false) then
         log("NATIVE_ENDED_FALLBACK name=" .. plateName(plate))
@@ -560,6 +588,7 @@ local function attachPlate(plate)
         nativeCastEnded(plate)
     end)
     plate:HookScript("OnHide", function()
+        pendingNativeBars[plate] = nil
         hideOverlay(plate, "plate_hide")
         plates[plate].guid = nil
         plates[plate].inferredName = nil
@@ -1056,6 +1085,7 @@ local function printHealth()
         .. ", channels=" .. totals.channels
         .. ", skipped=" .. totals.skipped
         .. ", stable=" .. totals.stable
+        .. ", deferred=" .. totals.deferred
     )
 end
 
@@ -1107,18 +1137,35 @@ aware:SetScript("OnUpdate", function(_, elapsed)
     summaryElapsed = summaryElapsed + elapsed
 
     local now = GetTime()
+    for plate in pairs(pendingNativeBars) do
+        local data = plates[plate]
+        if not data or not plate:IsShown() or not data.sourceBar:IsShown() then
+            pendingNativeBars[plate] = nil
+        else
+            showNativeCast(plate)
+        end
+    end
+
     for plate in pairs(visibleBars) do
         local data = plates[plate]
         if not data or not plate:IsShown() then
             hideOverlay(plate, "not_visible")
         elseif data.sourceBar:IsShown() then
-            local minimum, maximum = data.sourceBar:GetMinMaxValues()
-            data.bar:SetMinMaxValues(minimum, maximum)
-            data.bar:SetValue(data.sourceBar:GetValue())
+            local minimum, maximum = nativeCastValues(data)
+            if minimum then
+                data.bar:SetMinMaxValues(minimum, maximum)
+                data.bar:SetValue(data.sourceBar:GetValue())
 
-            local texture = data.sourceIcon and data.sourceIcon:GetTexture()
-            if texture and texture ~= data.icon:GetTexture() then
-                data.icon:SetTexture(texture)
+                local texture = data.sourceIcon and data.sourceIcon:GetTexture()
+                if texture and texture ~= data.icon:GetTexture() then
+                    data.icon:SetTexture(texture)
+                end
+            elseif data.cast and activeCasts[data.cast] and now < data.cast.endTime then
+                pendingNativeBars[plate] = true
+                data.bar:SetValue(now - data.cast.startTime)
+            else
+                pendingNativeBars[plate] = true
+                hideOverlay(plate, "native_not_ready")
             end
         elseif data.cast and activeCasts[data.cast] and now < data.cast.endTime then
             data.bar:SetValue(now - data.cast.startTime)
