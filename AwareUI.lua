@@ -260,7 +260,7 @@ local function createWindow()
     appearanceSlider(frame, 24, -481)
 
     section(frame, "Diagnostics", -536)
-    checkbox(frame, "Continuous combat log", "rawCombatLog", 22, -556, false)
+    checkbox(frame, "Protect continuous combat log", "rawCombatLog", 22, -556, false)
 
     local health = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
     health:SetWidth(96)

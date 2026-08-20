@@ -50,9 +50,14 @@ local scanElapsed = 0
 local unitScanElapsed = 0
 local cvarElapsed = 0
 local summaryElapsed = 0
+local rawLogElapsed = 0
 local sessionStarted = false
 local sessionID
 local rawLoggingWasEnabled = false
+local rawLogLastState
+local rawLogRecheckPending = false
+local rawLogHookInstalled = false
+local rawLogInternalCall = false
 local unmatchedDiagnostics = {}
 local currentZone = {
     category = "contested",
@@ -66,6 +71,7 @@ local MAX_LOG_ENTRIES = 20000
 local LOG_TRIM_COUNT = 1000
 local LOG_FORMAT_VERSION = 4
 local SUMMARY_INTERVAL = 15
+local RAW_LOG_CHECK_INTERVAL = 3
 local STABLE_BASE_DURATIONS = {
     [48785] = 1.5, -- Flash of Light
     [48782] = 2.5, -- Holy Light
@@ -1015,6 +1021,73 @@ local function refreshZoneState(reason)
     )
 end
 
+local function rawCombatLogEnabled()
+    return LoggingCombat and LoggingCombat() and true or false
+end
+
+local function setRawCombatLog(enabled)
+    if not LoggingCombat then
+        return false
+    end
+
+    rawLogInternalCall = true
+    LoggingCombat(enabled and 1 or 0)
+    rawLogInternalCall = false
+    return rawCombatLogEnabled()
+end
+
+local function enforceRawCombatLog(reason)
+    ensureSettings()
+    if not LoggingCombat then
+        log("RAW_COMBAT_LOG unavailable")
+        return false
+    end
+
+    local before = rawCombatLogEnabled()
+    local after = before
+    if AwareSettings.rawCombatLog and not before then
+        after = setRawCombatLog(true)
+        log(
+            "RAW_COMBAT_LOG_RESTORE reason=" .. tostring(reason)
+            .. " before=" .. tostring(before)
+            .. " after=" .. tostring(after)
+        )
+    elseif rawLogLastState ~= nil and rawLogLastState ~= before then
+        log(
+            "RAW_COMBAT_LOG_STATE reason=" .. tostring(reason)
+            .. " enabled=" .. tostring(before)
+        )
+    end
+    rawLogLastState = after
+    rawLogRecheckPending = false
+    return after
+end
+
+local function installRawCombatLogHook()
+    if rawLogHookInstalled or not hooksecurefunc or not LoggingCombat then
+        return
+    end
+
+    local hooked = pcall(hooksecurefunc, "LoggingCombat", function(requested)
+        if requested == nil or rawLogInternalCall then
+            return
+        end
+
+        local resulting = rawCombatLogEnabled()
+        log(
+            "RAW_COMBAT_LOG_EXTERNAL_CALL requested=" .. tostring(requested)
+            .. " resulting=" .. tostring(resulting)
+        )
+        if AwareSettings and AwareSettings.rawCombatLog and not resulting then
+            rawLogRecheckPending = true
+        end
+    end)
+    rawLogHookInstalled = hooked
+    if not hooked then
+        log("RAW_COMBAT_LOG_HOOK unavailable; watchdog remains active")
+    end
+end
+
 local function enableRawCombatLog()
     ensureSettings()
     if not LoggingCombat then
@@ -1022,12 +1095,12 @@ local function enableRawCombatLog()
         return
     end
 
-    rawLoggingWasEnabled = LoggingCombat() and true or false
-    if AwareSettings.rawCombatLog then
-        LoggingCombat(1)
-    end
+    rawLoggingWasEnabled = rawCombatLogEnabled()
+    installRawCombatLogHook()
+    local enabled = enforceRawCombatLog("startup")
     log(
-        "RAW_COMBAT_LOG enabled=" .. tostring(AwareSettings.rawCombatLog)
+        "RAW_COMBAT_LOG configured=" .. tostring(AwareSettings.rawCombatLog)
+        .. " enabled=" .. tostring(enabled)
         .. " wasEnabled=" .. tostring(rawLoggingWasEnabled)
     )
 end
@@ -1067,7 +1140,7 @@ local function printHealth()
 
     UpdateAddOnMemoryUsage()
     local memory = GetAddOnMemoryUsage(ADDON_NAME) or 0
-    local rawEnabled = LoggingCombat and LoggingCombat() and true or false
+    local rawEnabled = rawCombatLogEnabled()
 
     chat(
         "health: plates=" .. plateCount
@@ -1100,9 +1173,10 @@ local function applySettings()
 
     if LoggingCombat then
         if AwareSettings.rawCombatLog then
-            LoggingCombat(1)
+            enforceRawCombatLog("settings")
         elseif not rawLoggingWasEnabled then
-            LoggingCombat(0)
+            setRawCombatLog(false)
+            rawLogLastState = false
         end
     end
 end
@@ -1135,6 +1209,12 @@ aware:SetScript("OnUpdate", function(_, elapsed)
     unitScanElapsed = unitScanElapsed + elapsed
     cvarElapsed = cvarElapsed + elapsed
     summaryElapsed = summaryElapsed + elapsed
+    rawLogElapsed = rawLogElapsed + elapsed
+
+    if rawLogRecheckPending or rawLogElapsed >= RAW_LOG_CHECK_INTERVAL then
+        rawLogElapsed = 0
+        enforceRawCombatLog(rawLogRecheckPending and "external_call" or "periodic")
+    end
 
     local now = GetTime()
     for plate in pairs(pendingNativeBars) do
@@ -1230,6 +1310,7 @@ aware:SetScript("OnEvent", function(_, event, ...)
     elseif event == "PLAYER_ENTERING_WORLD" then
         clearActiveCasts("enter_world")
         refreshZoneState("enter_world")
+        enforceRawCombatLog("enter_world")
         associateKnownUnits()
         beginSession()
         local instanceName, instanceType = GetInstanceInfo()

@@ -47,8 +47,10 @@ screen.
 /aware clear
 ```
 
-The addon keeps compact session diagnostics in SavedVariables and enables
-WoW's raw combat log for continuous disk-backed evidence.
+The addon keeps compact session diagnostics in SavedVariables. With **Protect
+continuous combat log** enabled, it verifies WoW's raw disk-logging state after
+world transitions and every three seconds. If another addon, command, or the
+client disables logging, `aware` records the transition and restores it.
 
 ## Current boundary
 
