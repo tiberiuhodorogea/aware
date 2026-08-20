@@ -1,4 +1,34 @@
 local ADDON_NAME = ...
+local api = {}
+_G.Aware = api
+
+local defaults = {
+    enabled = true,
+    showFriendly = true,
+    showHostile = true,
+    showNPCPets = true,
+    showChannels = true,
+    showIcon = true,
+    barWidth = 97,
+    barHeight = 18,
+    verticalOffset = 0,
+    opacity = 1,
+    scale = 1,
+    showMinimap = true,
+    minimapAngle = 220,
+    rawCombatLog = true,
+}
+
+local function ensureSettings()
+    if type(AwareSettings) ~= "table" then
+        AwareSettings = {}
+    end
+    for key, value in pairs(defaults) do
+        if AwareSettings[key] == nil then
+            AwareSettings[key] = value
+        end
+    end
+end
 
 local aware = CreateFrame("Frame")
 local plates = {}
@@ -209,6 +239,11 @@ local function showNativeCast(plate)
     if not data then
         return
     end
+    ensureSettings()
+    if not AwareSettings.enabled then
+        hideOverlay(plate, "disabled")
+        return
+    end
 
     local minimum, maximum = data.sourceBar:GetMinMaxValues()
     setIcon(data, data.sourceIcon and data.sourceIcon:GetTexture())
@@ -275,6 +310,33 @@ local function nativeCastEnded(plate)
     end
 end
 
+local function applyPlateVisualSettings(plate, data)
+    local iconSpace = AwareSettings.showIcon and AwareSettings.barHeight + 1 or 0
+
+    data.overlay:SetWidth(AwareSettings.barWidth + iconSpace)
+    data.overlay:SetHeight(AwareSettings.barHeight)
+    data.overlay:SetScale(AwareSettings.scale)
+    data.overlay:SetAlpha(AwareSettings.opacity)
+    data.overlay:ClearAllPoints()
+    data.overlay:SetPoint("BOTTOM", plate, "TOP", 0, AwareSettings.verticalOffset)
+
+    data.iconBorder:SetWidth(AwareSettings.barHeight)
+    data.iconBorder:SetHeight(AwareSettings.barHeight)
+    if AwareSettings.showIcon then
+        data.iconBorder:Show()
+        data.icon:Show()
+        data.background:ClearAllPoints()
+        data.background:SetPoint("TOPLEFT", data.iconBorder, "TOPRIGHT", 1, 0)
+        data.background:SetPoint("BOTTOMRIGHT", data.overlay, "BOTTOMRIGHT", 0, 0)
+    else
+        data.iconBorder:Hide()
+        data.icon:Hide()
+        data.background:ClearAllPoints()
+        data.background:SetPoint("TOPLEFT", data.overlay, "TOPLEFT", 0, 0)
+        data.background:SetPoint("BOTTOMRIGHT", data.overlay, "BOTTOMRIGHT", 0, 0)
+    end
+end
+
 local function attachPlate(plate)
     if plates[plate] then
         return
@@ -316,13 +378,17 @@ local function attachPlate(plate)
     bar:SetPoint("TOPLEFT", background, "TOPLEFT", 1, -1)
     bar:SetPoint("BOTTOMRIGHT", background, "BOTTOMRIGHT", -1, 1)
 
-    plates[plate] = {
+    local data = {
         sourceBar = sourceBar,
         sourceIcon = sourceIcon,
         overlay = overlay,
         icon = icon,
+        iconBorder = iconBorder,
+        background = background,
         bar = bar,
     }
+    plates[plate] = data
+    applyPlateVisualSettings(plate, data)
 
     sourceBar:HookScript("OnShow", function()
         showNativeCast(plate)
@@ -345,6 +411,13 @@ local function attachPlate(plate)
     end
 
     log("PLATE_ATTACH name=" .. plateName(plate))
+end
+
+local function applyVisualSettings()
+    ensureSettings()
+    for plate, data in pairs(plates) do
+        applyPlateVisualSettings(plate, data)
+    end
 end
 
 local function scanNameplates()
@@ -509,6 +582,10 @@ local function stopCastByIdentity(guid, name, spellID, reason)
 end
 
 local function beginCast(guid, name, spellID, spellName, icon, duration, startTime, kind)
+    ensureSettings()
+    if not AwareSettings.enabled then
+        return
+    end
     local normalized = normalizeName(name)
     if not normalized or not duration or duration <= 0 then
         bump("skipped")
@@ -576,13 +653,48 @@ local function beginCast(guid, name, spellID, spellName, icon, duration, startTi
     end
 end
 
-local function startCombatCast(guid, name, spellID, spellName)
+local function sourceAllowed(flags)
+    ensureSettings()
+    if flags and bit and bit.band
+        and COMBATLOG_OBJECT_REACTION_FRIENDLY
+        and COMBATLOG_OBJECT_TYPE_PLAYER then
+        local friendly = bit.band(flags, COMBATLOG_OBJECT_REACTION_FRIENDLY) > 0
+        local player = bit.band(flags, COMBATLOG_OBJECT_TYPE_PLAYER) > 0
+        if friendly and not AwareSettings.showFriendly then
+            return false
+        elseif not friendly and not AwareSettings.showHostile then
+            return false
+        end
+        if not player and not AwareSettings.showNPCPets then
+            return false
+        end
+    end
+    return true
+end
+
+local function startCombatCast(guid, name, flags, spellID, spellName)
+    if not sourceAllowed(flags) then
+        return
+    end
     local duration, icon = getBaseCastDuration(spellID)
     beginCast(guid, name, spellID, spellName, icon, duration, GetTime(), "combatlog")
 end
 
 local function startUnitCast(unit, channel)
     if not unit or not UnitExists(unit) then
+        return
+    end
+
+    ensureSettings()
+    if channel and not AwareSettings.showChannels then
+        return
+    end
+    if UnitIsFriend("player", unit) and not AwareSettings.showFriendly then
+        return
+    elseif not UnitIsFriend("player", unit) and not AwareSettings.showHostile then
+        return
+    end
+    if not UnitIsPlayer(unit) and not AwareSettings.showNPCPets then
         return
     end
 
@@ -643,14 +755,20 @@ local function clearActiveCasts(reason)
 end
 
 local function enableRawCombatLog()
+    ensureSettings()
     if not LoggingCombat then
         log("RAW_COMBAT_LOG unavailable")
         return
     end
 
     rawLoggingWasEnabled = LoggingCombat() and true or false
-    LoggingCombat(1)
-    log("RAW_COMBAT_LOG enabled=true wasEnabled=" .. tostring(rawLoggingWasEnabled))
+    if AwareSettings.rawCombatLog then
+        LoggingCombat(1)
+    end
+    log(
+        "RAW_COMBAT_LOG enabled=" .. tostring(AwareSettings.rawCombatLog)
+        .. " wasEnabled=" .. tostring(rawLoggingWasEnabled)
+    )
 end
 
 local function beginSession()
@@ -676,6 +794,7 @@ local function beginSession()
 end
 
 local function printHealth()
+    ensureLog()
     local plateCount = 0
     local activeCount = 0
     for _ in pairs(plates) do
@@ -704,6 +823,44 @@ local function printHealth()
         .. ", channels=" .. totals.channels
         .. ", skipped=" .. totals.skipped
     )
+end
+
+local function applySettings()
+    ensureSettings()
+    SetCVar("nameplateShowEnemies", AwareSettings.showHostile and 1 or 0)
+    SetCVar("nameplateShowFriends", AwareSettings.showFriendly and 1 or 0)
+    applyVisualSettings()
+
+    if not AwareSettings.enabled then
+        clearActiveCasts("disabled")
+    end
+
+    if LoggingCombat then
+        if AwareSettings.rawCombatLog then
+            LoggingCombat(1)
+        elseif not rawLoggingWasEnabled then
+            LoggingCombat(0)
+        end
+    end
+end
+
+api.GetSettings = function()
+    ensureSettings()
+    return AwareSettings
+end
+
+api.GetDefaults = function()
+    return defaults
+end
+
+api.ApplySettings = applySettings
+api.Health = printHealth
+api.ClearTrackedCasts = function()
+    clearActiveCasts("settings_change")
+end
+api.ClearLog = function()
+    clearLog()
+    log("LOG_CLEARED session=" .. tostring(sessionID))
 end
 
 aware:SetScript("OnUpdate", function(_, elapsed)
@@ -773,10 +930,10 @@ aware:SetScript("OnEvent", function(_, event, ...)
         end
 
         ensureLog()
+        ensureSettings()
         SetCVar("showVKeyCastbar", 1)
-        SetCVar("nameplateShowEnemies", 1)
-        SetCVar("nameplateShowFriends", 1)
         enableRawCombatLog()
+        applySettings()
         log("ADDON_LOADED version=" .. tostring(GetAddOnMetadata(ADDON_NAME, "Version")))
         chat("loaded; visible nameplate cast bars are active")
         scanNameplates()
@@ -801,10 +958,10 @@ aware:SetScript("OnEvent", function(_, event, ...)
         or event == "ARENA_OPPONENT_UPDATE" then
         associateKnownUnits()
     elseif event == "COMBAT_LOG_EVENT_UNFILTERED" then
-        local _, subevent, sourceGUID, sourceName, _, destGUID, destName, _, spellID, spellName, _, extraSpellID = ...
+        local _, subevent, sourceGUID, sourceName, sourceFlags, destGUID, destName, _, spellID, spellName, _, extraSpellID = ...
 
         if subevent == "SPELL_CAST_START" then
-            startCombatCast(sourceGUID, sourceName, spellID, spellName)
+            startCombatCast(sourceGUID, sourceName, sourceFlags, spellID, spellName)
         elseif subevent == "SPELL_CAST_SUCCESS"
             or subevent == "SPELL_CAST_FAILED" then
             stopCastByIdentity(sourceGUID, sourceName, spellID, subevent)
@@ -852,8 +1009,7 @@ SlashCmdList.AWARE = function(message)
     ensureLog()
 
     if message == "clear" then
-        clearLog()
-        log("LOG_CLEARED session=" .. tostring(sessionID))
+        api.ClearLog()
         chat("debug log cleared")
         return
     end
@@ -872,5 +1028,14 @@ SlashCmdList.AWARE = function(message)
         return
     end
 
-    chat("commands: /aware health, /aware log, /aware clear")
+    if message == "" or message == "config" or message == "options" then
+        if api.ToggleOptions then
+            api.ToggleOptions()
+        else
+            chat("options are not available")
+        end
+        return
+    end
+
+    chat("commands: /aware, /aware health, /aware log, /aware clear")
 end
